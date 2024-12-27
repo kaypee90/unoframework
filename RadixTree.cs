@@ -42,7 +42,7 @@ public class RadixTree<T>
         current.Value = value;
     }
 
-    public T Search(string key)
+    public T? Search(string key)
     {
         var current = _root;
         foreach (var c in key)

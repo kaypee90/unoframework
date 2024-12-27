@@ -7,52 +7,61 @@ using System.Threading.Tasks;
 
 public class MicroWebFramework
 {
-    private readonly HttpListener _listener;
-    private readonly RadixTree<RouteHandler> _routeTree;
-    private readonly List<Func<HttpListenerContext, Task>> _middlewares;
+    private readonly HttpListener _listener = new();
+    private readonly RadixTree<RouteHandler> _routeTree = new();
+    private readonly List<Middleware> _middlewares = [];
+    private readonly MiddlewarePipeline _middlewarePipeline = new();
 
     public delegate Task RouteHandler(HttpListenerContext context);
-    public delegate Task Middleware(HttpListenerContext context, Func<Task> next);
 
-    public MicroWebFramework()
+    public MicroWebFramework Use(Middleware middleware)
     {
-        _listener = new HttpListener();
-        _routeTree = new RadixTree<RouteHandler>();
-        _middlewares = new List<Func<HttpListenerContext, Task>>();
+        _middlewares.Add(middleware);
+        return this;
     }
 
-    public void Use(Middleware middleware)
-    {
-        _middlewares.Add(async (context) =>
-        {
-            await middleware(context, async () => await ProcessRequest(context));
-        });
-    }
-
-    public void Start(string url)
+    public async Task Start(string url)
     {
         _listener.Prefixes.Add(url);
         _listener.Start();
+
+        foreach (var middleware in _middlewares)
+        {
+            _middlewarePipeline.Use(middleware);
+        }
+        
         Console.WriteLine($"Listening on {url}");
 
-        Task.Run(async () =>
+        await Task.Run(async () =>
         {
             while (_listener.IsListening)
             {
-                var context = _listener.GetContext();
-                await ExecuteMiddlewares(context);
+                var context = await _listener.GetContextAsync();
+                await _middlewarePipeline.Invoke(context);
+
+                Console.WriteLine(context.Request.Url?.ToString());
+
+                // Respond to the request
+                var path = context.Request.Url?.AbsolutePath;
+                if (path is null)
+                {
+                    await HandleInvalidRequests(context, StatusCodes.BadRequest, "Invalid request");
+                }
+                else
+                {
+                    var handler = _routeTree.Search(path);
+                    if (handler == null)
+                    {
+                        await HandleInvalidRequests(context, StatusCodes.NotFound, "Route not found");
+                    }
+                    else
+                    {
+                        await handler(context);
+                    }
+                }
             }
         });
     }
-
-    private async Task ExecuteMiddlewares(HttpListenerContext context)
-    {
-        foreach (var middleware in _middlewares)
-        {
-            await middleware(context);
-        }
-    }
-
     public void Stop()
     {
         _listener.Stop();
@@ -63,20 +72,12 @@ public class MicroWebFramework
         _routeTree.Insert(path, handler);
     }
 
-    private async Task ProcessRequest(HttpListenerContext context)
+    private static async Task HandleInvalidRequests(HttpListenerContext context, StatusCodes statusCode, string responseText)
     {
-        var path = context.Request.Url?.AbsolutePath;
-        var handler = _routeTree.Search(path);
-
-        if (handler != null)
-        {
-            await handler(context);
-        }
-        else
-        {
-            context.Response.StatusCode = 404;
-            await context.Response.OutputStream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("Not Found"));
-            context.Response.Close();
-        }
+        context.Response.StatusCode = (int)statusCode;
+        await context.Response.OutputStream.WriteAsync(
+            System.Text.Encoding.UTF8.GetBytes(responseText)
+        );
+        context.Response.Close();
     }
 }
