@@ -1,5 +1,8 @@
-﻿using System.Text.Json;
-using unoframework;
+﻿using unoframework;
+using unoframework.Middlewares;
+using unoframework.RequestHandlers;
+using unoframework.ResponseHandlers;
+
 
 var loggingMiddleware = new Middleware(async (context, next) =>
 {
@@ -16,8 +19,10 @@ var authMiddleware = new Middleware(async (context, next) =>
     await next();
 });
 
-var framework = new MicroWebFramework();
-framework.AddRoute("/", async (context) =>
+var app = WebAppBuilder.Build();
+
+// GET
+app.AddRoute("/", async (context) =>
 {
     // Accessing the request object
     var request = context.Request;
@@ -32,14 +37,11 @@ framework.AddRoute("/", async (context) =>
     // ...
 
     // Preparing and sending a response (as an example)
-    var response = new UnoHttpResponse(context);
     var responseString = "<html><head><title></title><head><body> <h1>Received: " 
                          + httpMethod + " " + url + "</h1><br><h2>User Agent: " 
                          + userAgent + "</body></html>";
-    await response.View(responseString);
-});
-
-framework.AddRoute("/health", async (context) =>
+    await Results.View(context, responseString);
+}).AddRoute("/health", async (context) =>
 {
     // Accessing the request object
     var request = context.Request;
@@ -54,22 +56,50 @@ framework.AddRoute("/health", async (context) =>
     // ...
 
     // Preparing and sending a response (as an example)
-    var response = new UnoHttpResponse(context);
-    var jsonString = JsonSerializer.Serialize(new
+    var data = new
     {
         userAgent,
         url,
         httpMethod,
         message = "healthy"
-    });
-    await response.Json(jsonString);
+    };
+    await Results.Ok(context, data);
 });
 
-framework
+// POST
+app.AddRoute("/create", async (context) =>
+{
+    var request = context.Request;
+    if (request.HttpMethod == "POST")
+    {
+        var body = await Request.GetBody<Person>(context);
+        var updatedPerson = new
+        {
+            body?.Name,
+            body?.Age,
+            Gender = "male",
+            CountryOfBirth = "USA",
+            IsAlive = true
+        };
+        await Results.Ok(context, updatedPerson);
+    }
+    else
+    {
+        await Results.Forbidden(context, "Request is not POST");
+    }
+});
+
+app
     .Use(loggingMiddleware)
     .Use(authMiddleware);
 
-await framework.Start("http://localhost:7071/");
+await app.Start("http://localhost:7071/");
 Console.WriteLine("Press Enter to quit.");
 Console.ReadLine();
-framework.Stop();
+app.Stop();
+
+class Person
+{
+    public string? Name { get; set; }
+    public int Age { get; set; }
+}
