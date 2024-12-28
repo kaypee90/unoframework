@@ -6,9 +6,4 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="xunit.assert" Version="2.5.3" />
-    <PackageReference Include="xunit.extensibility.core" Version="2.5.3" />
-  </ItemGroup>
 </Project>
