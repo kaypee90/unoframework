@@ -3,3 +3,19 @@ GET http://localhost:7071
 ###
 GET http://localhost:7071/health
 Authorization: Bearer 12345
+
+###
+GET http://localhost:7071/not-found
+
+###
+GET http://localhost:7071/create
+
+###
+POST http://localhost:7071/create
+Content-Type: application/json
+
+{
+ "Name": "Test Name",
+ "Age": 50
+}
+

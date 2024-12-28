@@ -1,6 +1,6 @@
 using System.Net;
 
-namespace unoframework;
+namespace unoframework.Middlewares;
 
 public sealed class Middleware
 {
