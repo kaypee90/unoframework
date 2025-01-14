@@ -19,3 +19,6 @@ Content-Type: application/json
  "Age": 50
 }
 
+###
+GET http://localhost:7071/books?q=Book1
+
