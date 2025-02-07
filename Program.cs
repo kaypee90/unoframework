@@ -134,7 +134,8 @@ app.AddRoute(
 
 app.Use(loggingMiddleware).Use(authMiddleware);
 
-await app.Start("http://localhost:7071/");
+const string url = "http://localhost:7071/";
+await app.Start(url);
 Console.WriteLine("Press Enter to quit.");
 Console.ReadLine();
 app.Stop();
