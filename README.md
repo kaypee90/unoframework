@@ -1,73 +1,194 @@
-# UNO Framework (Not for prod use)
+# UNO Framework
 
-UNO Framework is an experimental micro HTTP framework that utilizes Radix Tree for implementing basic routing functionality.
+> A small, experimental HTTP framework for .NET built around radix-tree routing.
 
-## Overview
+UNO Framework is a lightweight project for exploring fast, predictable HTTP routing and a
+minimal web-hosting API. It is intentionally small and is **not recommended for production use**.
 
-UNO Framework aims to explore the feasibility and performance of using Radix Tree data structure for routing in a micro framework setting. By leveraging the efficiency of Radix Tree, UNO Framework aims to provide a lightweight and high-performance solution for handling HTTP requests and routing them to appropriate handlers.
+## Highlights
 
-## Features
+- Radix-tree routing with static, named-parameter, and catch-all segments
+- Middleware pipelines with short-circuiting support
+- Typed query-string, route, and JSON body helpers
+- Automatic `404`, `405`, `OPTIONS`, and `HEAD` handling
+- Strict route validation and URL decoding
+- Concurrent request processing
+- Graceful shutdown with configurable draining of in-flight requests
+- No external runtime dependencies
 
-- **Radix Tree Routing**: UNO Framework utilizes Radix Tree data structure for efficient routing of HTTP requests based on URL paths.
-  
-- **Basic Middleware Support**: UNO Framework supports basic middleware functionality for intercepting and processing HTTP requests before they are routed to handlers.
+## Requirements
 
-- **Minimalistic Design**: UNO Framework follows a minimalistic design philosophy, focusing on simplicity and performance without sacrificing functionality.
+- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+
+## Quick start
+
+Clone the repository and run the sample application:
+
+```sh
+git clone https://github.com/kaypee90/unoframework.git
+cd unoframework
+dotnet run
+```
+
+The sample server listens on `http://localhost:7071/`.
+
+Try a few requests:
+
+```sh
+curl http://localhost:7071/health
+curl 'http://localhost:7071/books?q=Book1'
+curl http://localhost:7071/books/Book2
+curl http://localhost:7071/files/docs/readme.txt
+```
+
+## A minimal application
+
+```csharp
+using unoframework;
+using unoframework.Middlewares;
+using unoframework.RequestHandlers;
+using unoframework.ResponseHandlers;
+
+var app = WebAppBuilder.Build();
+
+app.Get("/health", async context =>
+{
+    await Results.Ok(context, new { status = "healthy" });
+})
+.Get("/books/:title", async context =>
+{
+    var title = Request.GetRouteParam<string>(context, "title");
+    await Results.Ok(context, new { title });
+})
+.Post("/books", async context =>
+{
+    var book = await Request.GetBody<Book>(context);
+    await Results.Ok(context, book);
+});
+
+await app.RunAsync("http://localhost:7071/", CancellationToken.None);
+
+public sealed record Book(string Title);
+```
+
+`RunAsync` keeps the server running until its cancellation token is cancelled. If the
+application needs to start listening without blocking, use `Start` and later call `StopAsync`:
+
+```csharp
+await app.Start("http://localhost:7071/");
+// ... application work ...
+await app.StopAsync();
+```
 
 ## Routing
 
-Routes are stored in a compressed radix tree (`Routing/RadixTree.cs`): static text lives on edges
-that are split on their longest common prefix, so lookups cost O(path length).
+Routes are registered on `WebHost`:
 
 ```csharp
-var app = WebAppBuilder.Build();
-
-app.Get("/books", ListBooks)                 // static
-   .Get("/books/:title", GetBook)            // named parameter (one segment)
-   .Get("/files/*path", GetFile)             // catch-all (rest of the path, must be last)
-   .Post("/create", Create)
-   .AddRoute("/any", Any);                   // any HTTP method
-
-await app.RunAsync("http://localhost:7071/", cancellationToken); // blocks until cancelled
-// or: await app.Start(url); ... await app.StopAsync();          // Start returns once listening
+app.Get("/books", ListBooks)
+   .Get("/books/:title", GetBook)   // one named path segment
+   .Get("/files/*path", GetFile)    // remaining path; must be last
+   .Post("/books", CreateBook)
+   .AddRoute("/health", HealthCheck); // any HTTP method
 ```
 
-Inside a handler: `Request.GetRouteParam<int>(context, "id")`, `Request.GetQueryParam<string>(context, "q")`,
-`Request.GetBody<T>(context)`. Conversions use invariant culture and are strict: decimal digits
-only for numbers (no `0x10`), defined names/values only for enums (combinations only for `[Flags]`).
+The router stores routes in a compressed radix tree. At each level it tries branches in this
+order:
 
-Matching rules:
+1. Static text
+2. Named parameter (`:name`)
+3. Catch-all parameter (`*name`)
 
-- Priority at each level is **static → `:param` → `*catchAll`**, with backtracking, so
-  `/users/new` and `/users/:id/edit` can coexist.
-- A static route that doesn't handle the request method doesn't hide a parameter route that does.
-- Unknown path → `404`; known path with the wrong method → `405` with an `Allow` header listing
-  every method any matching route supports.
-- `HEAD` is answered by the `GET` handler unless a `HEAD` handler is registered; `Results.*`
-  then sends the headers without a body. (A handler that writes `context.Response.OutputStream`
-  directly must skip the body for `HEAD` itself.) `OPTIONS` is answered automatically with `204`
-  and an `Allow` header.
-- Trailing slashes are ignored (`/books` == `/books/`). Matching is case-sensitive and runs on the
-  percent-encoded path; static parts of patterns are encoded the same way, so `/café` works.
-  Parameter values are URL-decoded (`%2F` inside a parameter does not split segments).
-- A decoded parameter containing a `.` or `..` segment (e.g. `/files/a%2F..%2Fsecret`) is rejected
-  with `400`. Still validate paths yourself before touching the file system.
-- Invalid patterns, conflicting parameter names at the same position (`/u/:id` vs `/u/:name`) and
-  duplicate method+path registrations throw at startup; a rejected pattern leaves the tree unchanged.
+The matcher backtracks when a higher-priority branch cannot produce a valid route, so static and
+parameterized routes can safely coexist.
 
-Middlewares run in registration order **around** the route handler and may short-circuit by not
-calling `next()`. Unhandled handler exceptions become `500` (`BadRequestException`, e.g. an invalid
-JSON body, becomes `400`) *inside* the pipeline, so middlewares see those status codes after
-`await next()`. Exceptions thrown by a middleware itself are also turned into `500`.
+### Route behavior
 
-`StopAsync()` shuts down gracefully: new requests get `503`, in-flight requests get up to 10 s
-(configurable) to finish, and anything still running after that is answered with `503`.
-A stopped host can't be restarted. Calling `StopAsync()` from inside a handler works (that request
-isn't waited for and the listener closes once it completes, within the same deadline), but
-cancelling the token passed to `RunAsync` is the cleaner way.
+- Trailing slashes are ignored (`/books` matches `/books/`).
+- Matching is case-sensitive.
+- Parameters are URL-decoded and can be read with `Request.GetRouteParam<T>`.
+- Query values can be read with `Request.GetQueryParam<T>`.
+- `HEAD` falls back to `GET` when no explicit `HEAD` route exists.
+- `OPTIONS` is handled automatically with a `204` response and an `Allow` header.
+- Unknown paths return `404`.
+- Known paths with an unsupported method return `405` and an `Allow` header.
+- Invalid patterns, conflicting parameter names, and duplicate method/path registrations fail during
+  setup.
 
-## Tests
+## Middleware
+
+Middleware runs in registration order around the route handler. It can add headers, perform
+cross-cutting work, or stop the pipeline by not calling `next`.
+
+```csharp
+var logging = new Middleware(async (context, next) =>
+{
+    Console.WriteLine($"{context.Request.HttpMethod} {context.Request.Url}");
+    await next();
+    Console.WriteLine($"Response: {context.Response.StatusCode}");
+});
+
+app.Use(logging);
+```
+
+Unhandled handler exceptions become `500` responses. Invalid request data represented by
+`BadRequestException` becomes `400`.
+
+## Responses
+
+Use the helpers in `unoframework.ResponseHandlers.Results` for common responses:
+
+```csharp
+await Results.Ok(context, new { message = "ok" });
+await Results.View(context, "<h1>Hello</h1>");
+await Results.NotFound(context, "Book not found");
+await Results.BadRequest(context, "Invalid request");
+await Results.NoContent(context);
+```
+
+Handlers that write directly to `context.Response.OutputStream` are responsible for omitting the
+response body for `HEAD` requests.
+
+## Graceful shutdown
+
+`StopAsync` stops accepting new work, returns `503 Service Unavailable` to new requests, and
+allows in-flight requests to finish for up to 10 seconds by default:
+
+```csharp
+await app.StopAsync(TimeSpan.FromSeconds(5));
+```
+
+The timeout is configurable. A stopped host cannot be restarted or reconfigured.
+
+## Development
+
+Build the project:
+
+```sh
+dotnet build
+```
+
+Run the test suite:
 
 ```sh
 dotnet test
 ```
+
+The repository includes focused tests for routing, radix-tree matching, middleware, typed value
+conversion, request handling, and host lifecycle behavior.
+
+## Project layout
+
+| Path | Purpose |
+| --- | --- |
+| `Routing/` | Radix-tree implementation and route matching |
+| `Middlewares/` | Middleware and pipeline execution |
+| `RequestHandlers/` | Request parsing and typed value conversion |
+| `ResponseHandlers/` | Response helpers and status handling |
+| `WebHost.cs` | HTTP listener, request dispatch, and shutdown |
+| `tests/` | Unit and integration tests |
+
+## Status
+
+UNO Framework is an experimental learning project. APIs and behavior may change without notice,
+and the framework has not been hardened or supported for production workloads.
