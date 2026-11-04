@@ -1,10 +1,13 @@
 using System.Net;
 using System.Text.Json;
+using unoframework.Routing;
 
 namespace unoframework.RequestHandlers;
 
 internal sealed class UnoHttpRequest
 {
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
     private readonly HttpListenerContext _context;
 
     public UnoHttpRequest(HttpListenerContext context)
@@ -12,52 +15,36 @@ internal sealed class UnoHttpRequest
         _context = context;
     }
 
-    public async Task<T?> PostAsync<T>()
+    /// <summary>Deserializes the JSON body; returns <c>null</c> for an empty body.</summary>
+    /// <exception cref="BadRequestException">The body is not valid JSON for <typeparamref name="T"/>.</exception>
+    public async Task<T?> ReadJsonBodyAsync<T>()
         where T : class
     {
         var request = _context.Request;
         using var reader = new StreamReader(request.InputStream, request.ContentEncoding);
         var body = await reader.ReadToEndAsync();
-
-        var data = JsonSerializer.Deserialize<T>(body);
-        return data;
-    }
-
-    public bool GetQueryParam<T>(string key, out T? value)
-    {
-        var parameters = _context.Request.QueryString;
-        value = default;
-
-        if (!parameters.HasKeys() || parameters[key] == null)
+        if (string.IsNullOrWhiteSpace(body))
         {
-            return false;
+            return null;
         }
 
         try
         {
-            var paramValue = parameters[key];
-            if (paramValue == null)
-            {
-                return false;
-            }
-
-            // Attempt to convert to the specified type
-            if (typeof(T).IsEnum)
-            {
-                value = (T)Enum.Parse(typeof(T), paramValue);
-            }
-            else
-            {
-                value = (T)Convert.ChangeType(paramValue, typeof(T));
-            }
-
-            return true;
+            return JsonSerializer.Deserialize<T>(body, JsonOptions);
         }
-        catch
+        catch (JsonException ex)
         {
-            // If conversion fails, return false
-            return false;
+            throw new BadRequestException("Request body is not valid JSON.", ex);
         }
     }
-}
 
+    public bool GetQueryParam<T>(string key, out T? value) =>
+        ValueConverter.TryConvert(_context.Request.QueryString[key], out value);
+
+    public bool GetRouteParam<T>(string key, out T? value)
+    {
+        value = default;
+        return RouteValues.For(_context).TryGetValue(key, out var raw)
+            && ValueConverter.TryConvert(raw, out value);
+    }
+}

@@ -1,42 +1,43 @@
 using System.Net;
+using System.Text;
 
 namespace unoframework.ResponseHandlers;
 
 internal sealed class UnoHttpResponse
 {
-   private readonly HttpListenerContext _context;
-   public UnoHttpResponse(HttpListenerContext context)
-   {
-      _context = context;
-   }
-   
-   public async Task View(string body)
-      => await HandleResponse(body, "text/html");
+    private readonly HttpListenerContext _context;
 
-   public async Task Json(string jsonString, StatusCodes statusCode = StatusCodes.Ok)
-      => await HandleResponse(jsonString, "application/json", statusCode);
+    public UnoHttpResponse(HttpListenerContext context)
+    {
+        _context = context;
+    }
 
-   private async Task HandleResponse(string responseContent, string contentType, StatusCodes statusCode = StatusCodes.Ok)
-   {
-      SetStatusCode(statusCode);
-      var response = _context.Response;
-      var buffer = System.Text.Encoding.UTF8.GetBytes(responseContent);
+    public Task View(string body) => HandleResponse(body, "text/html; charset=utf-8", StatusCodes.Ok);
 
-      response.ContentLength64 = buffer.Length;
-      response.ContentType = contentType;
-      var output = response.OutputStream;
-      await output.WriteAsync(buffer);
-      output.Close();  
-   }
-   
-   public async Task HandleInvalidRequests(string responseText, StatusCodes statusCode)
-   {
-      SetStatusCode(statusCode);
-      await _context.Response.OutputStream.WriteAsync(
-         System.Text.Encoding.UTF8.GetBytes(responseText)
-      );
-      _context.Response.Close();
-   }
-   
-   private void SetStatusCode(StatusCodes statusCode) => _context.Response.StatusCode = (int)statusCode; 
+    public Task Json(string jsonString, StatusCodes statusCode = StatusCodes.Ok) =>
+        HandleResponse(jsonString, "application/json; charset=utf-8", statusCode);
+
+    public Task HandleInvalidRequests(string responseText, StatusCodes statusCode) =>
+        HandleResponse(responseText, "text/plain; charset=utf-8", statusCode);
+
+    private async Task HandleResponse(string responseContent, string contentType, StatusCodes statusCode)
+    {
+        var response = _context.Response;
+        var buffer = Encoding.UTF8.GetBytes(responseContent);
+
+        response.StatusCode = (int)statusCode;
+        response.ContentType = contentType;
+        response.ContentLength64 = buffer.Length;
+
+        // HEAD responses carry the GET headers (incl. Content-Length) but never a body (RFC 9110
+        // §9.3.2). The managed HttpListener would otherwise put the bytes on the wire and corrupt
+        // the keep-alive connection. Handlers writing Response.OutputStream directly must check
+        // for HEAD themselves (HttpListenerResponse.OutputStream can't be wrapped).
+        if (!string.Equals(_context.Request.HttpMethod, "HEAD", StringComparison.OrdinalIgnoreCase))
+        {
+            await response.OutputStream.WriteAsync(buffer);
+        }
+
+        response.Close();
+    }
 }

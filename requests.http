@@ -7,7 +7,7 @@ Authorization: Bearer 12345
 ###
 GET http://localhost:7071/not-found
 
-###
+### Returns 405 Method Not Allowed (Allow: POST)
 GET http://localhost:7071/create
 
 ###
@@ -22,3 +22,9 @@ Content-Type: application/json
 ###
 GET http://localhost:7071/books?q=Book1
 
+
+###
+GET http://localhost:7071/books/Book2
+
+###
+GET http://localhost:7071/files/docs/readme.txt

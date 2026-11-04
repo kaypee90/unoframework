@@ -1,4 +1,6 @@
-﻿using unoframework;
+﻿using System.Net;
+using System.Runtime.InteropServices;
+using unoframework;
 using unoframework.Middlewares;
 using unoframework.RequestHandlers;
 using unoframework.ResponseHandlers;
@@ -25,120 +27,133 @@ var authMiddleware = new Middleware(
 
 var app = WebAppBuilder.Build();
 
-// GET
-app.AddRoute(
+var books = new List<Book>
+{
+    new Book { Title = "Book1", Author = "Author 1" },
+    new Book { Title = "Book2", Author = "Author 2" },
+    new Book { Title = "Book3", Author = "Author 3" },
+};
+
+app.Get(
         "/",
         async (context) =>
         {
-            // Accessing the request object
             var request = context.Request;
-
-            // Accessing specific properties of the request
             var httpMethod = request.HttpMethod;
-            var url = request.Url?.ToString();
-            var userAgent = request.UserAgent;
-            // ... other properties and headers can be accessed in a similar way
+            var url = WebUtility.HtmlEncode(request.Url?.ToString());
+            var userAgent = WebUtility.HtmlEncode(request.UserAgent);
 
-            // Logic to handle the request
-            // ...
-
-            // Preparing and sending a response (as an example)
             var responseString =
-                "<html><head><title></title><head><body> <h1>Received: "
+                "<html><head><title></title></head><body><h1>Received: "
                 + httpMethod
                 + " "
                 + url
                 + "</h1><br><h2>User Agent: "
                 + userAgent
-                + "</body></html>";
+                + "</h2></body></html>";
             await Results.View(context, responseString);
         }
     )
-    .AddRoute(
+    .Get(
         "/health",
         async (context) =>
         {
-            // Accessing the request object
             var request = context.Request;
-
-            // Accessing specific properties of the request
-            var httpMethod = request.HttpMethod;
-            var url = request.Url?.ToString();
-            var userAgent = request.UserAgent;
-            // ... other properties and headers can be accessed in a similar way
-
-            // Logic to handle the request
-            // ...
-
-            // Preparing and sending a response (as an example)
             var data = new
             {
-                userAgent,
-                url,
-                httpMethod,
+                userAgent = request.UserAgent,
+                url = request.Url?.ToString(),
+                httpMethod = request.HttpMethod,
                 message = "healthy",
             };
             await Results.Ok(context, data);
         }
     )
-    .AddRoute(
+    // GET /books?q=Book1
+    .Get(
         "/books",
         async (context) =>
         {
-            var books = new List<Book>
-            {
-                new Book { Title = "Book1", Author = "Author 1" },
-                new Book { Title = "Book2", Author = "Author 2" },
-                new Book { Title = "Book3", Author = "Author 3" },
-            };
-
+            var result = books;
             var searchParam = Request.GetQueryParam<string>(context, "q");
             if (!string.IsNullOrEmpty(searchParam))
             {
-                books = books
+                result = books
                     .Where(b =>
-                        b.Title != null && b.Title.ToLower().Contains(searchParam.ToLower())
+                        b.Title != null
+                        && b.Title.Contains(searchParam, StringComparison.OrdinalIgnoreCase)
                     )
                     .ToList();
             }
 
-            await Results.Ok(context, books);
+            await Results.Ok(context, result);
         }
-    );
+    )
+    // GET /books/Book1 — route parameter
+    .Get(
+        "/books/:title",
+        async (context) =>
+        {
+            var title = Request.GetRouteParam<string>(context, "title");
+            var book = books.FirstOrDefault(b =>
+                string.Equals(b.Title, title, StringComparison.OrdinalIgnoreCase)
+            );
 
-// POST
-app.AddRoute(
-    "/create",
-    async (context) =>
-    {
-        var request = context.Request;
-        if (request.HttpMethod == "POST")
+            if (book is null)
+            {
+                await Results.NotFound(context, $"Book '{title}' not found");
+                return;
+            }
+
+            await Results.Ok(context, book);
+        }
+    )
+    // GET /files/docs/readme.txt — catch-all parameter
+    .Get(
+        "/files/*path",
+        async (context) =>
+            await Results.Ok(context, new { path = Request.GetRouteParam<string>(context, "path") })
+    )
+    .Post(
+        "/create",
+        async (context) =>
         {
             var body = await Request.GetBody<Person>(context);
+            if (body is null)
+            {
+                await Results.BadRequest(context, "Request body is required");
+                return;
+            }
+
             var updatedPerson = new
             {
-                body?.Name,
-                body?.Age,
+                body.Name,
+                body.Age,
                 Gender = "male",
                 CountryOfBirth = "USA",
                 IsAlive = true,
             };
             await Results.Ok(context, updatedPerson);
         }
-        else
-        {
-            await Results.Forbidden(context, "Request is not POST");
-        }
-    }
-);
+    );
 
 app.Use(loggingMiddleware).Use(authMiddleware);
 
+// Run until Ctrl+C / SIGTERM. (Doesn't depend on stdin, so it also works under nohup, Docker, systemd.)
+// Cancelling the signal keeps the process alive until RunAsync has drained in-flight requests.
+using var shutdown = new CancellationTokenSource();
+void RequestShutdown(PosixSignalContext signal)
+{
+    // First signal: graceful shutdown. A second one is let through to force-quit during the drain.
+    signal.Cancel = !shutdown.IsCancellationRequested;
+    shutdown.Cancel();
+}
+using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, RequestShutdown);
+using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, RequestShutdown);
+
 const string url = "http://localhost:7071/";
-await app.Start(url);
-Console.WriteLine("Press Enter to quit.");
-Console.ReadLine();
-app.Stop();
+Console.WriteLine("Press Ctrl+C to quit.");
+await app.RunAsync(url, shutdown.Token);
 
 class Person
 {
